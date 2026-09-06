@@ -54,12 +54,10 @@ it('valt terug op unknown bij een onbekende combinatie', function (int $status, 
     [400, 0],
 ]);
 
-it('herkent alleen 401004 als ingetrokken token', function (): void {
-    $revoked = new ItheorieException('revoked', ErrorKind::Token, 401, 401004);
-    $invalid = new ItheorieException('invalid', ErrorKind::Token, 401, 401009);
-    $basic = new ItheorieException('basic', ErrorKind::Authentication, 401, 401001);
+it('behandelt elke tokenfout als een verlopen token, niet alleen een intrekking', function (int $code): void {
+    expect(new ItheorieException('token', ErrorKind::Token, 401, $code)->isStaleToken())->toBeTrue();
+})->with([401004, 401005, 401006, 401007, 401008, 401009]);
 
-    expect($revoked->isRevokedToken())->toBeTrue()
-        ->and($invalid->isRevokedToken())->toBeFalse()
-        ->and($basic->isRevokedToken())->toBeFalse();
+it('behandelt een broker-authenticatiefout niet als een verlopen token', function (): void {
+    expect(new ItheorieException('basic', ErrorKind::Authentication, 401, 401001)->isStaleToken())->toBeFalse();
 });

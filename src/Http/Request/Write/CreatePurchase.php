@@ -16,6 +16,12 @@ final class CreatePurchase extends BaseRequest implements HasBody
 
     protected Method $method = Method::POST;
 
+    /**
+     * iTheorie draagt geen idempotency-key en dedupliceert niet, dus een tweede
+     * verzending koopt een tweede code. Nooit opnieuw proberen.
+     */
+    public ?int $tries = 1;
+
     public function __construct(string $reseller, private readonly PurchaseRequest $purchase)
     {
         parent::__construct($reseller);

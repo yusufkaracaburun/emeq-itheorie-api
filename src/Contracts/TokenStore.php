@@ -16,6 +16,4 @@ interface TokenStore
     public function get(ItheorieCredentials $credentials): ?string;
 
     public function put(ItheorieCredentials $credentials, string $token): void;
-
-    public function forget(ItheorieCredentials $credentials): void;
 }

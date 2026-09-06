@@ -22,12 +22,18 @@ use Emeq\ItheorieApi\Http\Request\Write\CreatePurchase;
 use Emeq\ItheorieApi\Support\ErrorMapper;
 use Emeq\ItheorieApi\Support\Normalize;
 use Emeq\ItheorieApi\Support\PurchaseLocation;
+use Illuminate\Contracts\Cache\LockProvider;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Saloon\Http\Auth\TokenAuthenticator;
 use Saloon\Http\Request;
 use Saloon\Http\Response;
 
 class Itheorie
 {
+    private const LOCK_WAIT_SECONDS = 10;
+
+    private const LOCK_TTL_SECONDS = 30;
+
     private ?ItheorieConnector $connector = null;
 
     private ?ItheorieCredentials $credentials = null;
@@ -35,6 +41,7 @@ class Itheorie
     public function __construct(
         private readonly ItheorieCredentialResolver $resolver,
         private readonly TokenStore $tokens,
+        private readonly ?LockProvider $locks = null,
     ) {}
 
     public function credentials(): ItheorieCredentials
@@ -138,17 +145,19 @@ class Itheorie
 
     private function send(Request $request, bool $retried = false): Response
     {
-        $response = $this->connector()->send($request->authenticate(new TokenAuthenticator($this->token())));
+        $token = $this->token();
+        $response = $this->connector()->send($request->authenticate(new TokenAuthenticator($token)));
 
-        if ($response->successful()) {
+        // Een geslaagde aankoop antwoordt met 303 naar de aankooppagina, dus een
+        // redirect is hier succes en geen fout.
+        if ($response->successful() || $response->redirect()) {
             return $response;
         }
 
         $exception = ErrorMapper::fromResponse($response);
 
-        if (! $retried && $exception->isRevokedToken()) {
-            $this->tokens->forget($this->credentials());
-            $this->authenticate();
+        if (! $retried && $exception->isStaleToken()) {
+            $this->authenticate($token);
 
             return $this->send($request, true);
         }
@@ -156,7 +165,44 @@ class Itheorie
         throw $exception;
     }
 
-    private function authenticate(): string
+    /**
+     * iTheorie trekt het vorige token in zodra er een nieuw wordt aangemaakt, dus
+     * twee processen die tegelijk vernieuwen slaan elkaars token om. De lock laat
+     * er één winnen; de verliezers lezen onder de lock het verse token.
+     */
+    private function authenticate(?string $stale = null): string
+    {
+        if ($this->locks === null) {
+            return $this->requestToken();
+        }
+
+        $lock = $this->locks->lock('itheorie:auth:'.$this->credentials()->fingerprint(), self::LOCK_TTL_SECONDS);
+
+        try {
+            $lock->block(self::LOCK_WAIT_SECONDS);
+        } catch (LockTimeoutException) {
+            throw new ItheorieException(
+                message: 'Kon geen iTheorie-token vernieuwen: de refresh-lock bleef bezet.',
+                kind: ErrorKind::ServiceUnavailable,
+                status: 503,
+                partnerCode: 0,
+            );
+        }
+
+        try {
+            $fresh = $this->tokens->get($this->credentials());
+
+            if ($fresh !== null && $fresh !== $stale) {
+                return $fresh;
+            }
+
+            return $this->requestToken();
+        } finally {
+            $lock->release();
+        }
+    }
+
+    private function requestToken(): string
     {
         $response = $this->connector()->send(new GetAuthToken($this->credentials()));
 

@@ -2,9 +2,14 @@
 
 declare(strict_types=1);
 
+use Emeq\ItheorieApi\Contracts\TokenStore;
+use Emeq\ItheorieApi\Data\ItheorieCredentials;
 use Emeq\ItheorieApi\Data\PurchaseRequest;
 use Emeq\ItheorieApi\Enums\ErrorKind;
 use Emeq\ItheorieApi\Exceptions\ItheorieException;
+use Emeq\ItheorieApi\Itheorie;
+use Emeq\ItheorieApi\Tests\Support\StaticCredentialResolver;
+use Illuminate\Support\Facades\Cache;
 use Saloon\Http\Faking\MockClient;
 use Saloon\Http\Faking\MockResponse;
 
@@ -114,10 +119,10 @@ it('probeert precies één keer opnieuw bij een blijvend ingetrokken token', fun
     $mock->assertSentCount(4);
 });
 
-it('probeert niet opnieuw bij een tokenfout die geen intrekking is', function (): void {
+it('probeert niet opnieuw bij een broker-authenticatiefout', function (): void {
     $mock = MockClient::global([
         authOk(),
-        partnerError(401, 401009, 'Token is invalid'),
+        partnerError(401, 401010, 'Broker not found'),
     ]);
 
     expect(fn () => itheorie()->courses())->toThrow(ItheorieException::class);
@@ -176,7 +181,7 @@ it('koopt een code en geeft de genormaliseerde aankoop terug', function (): void
 it('volgt een aankoop-antwoord zonder body via de Location-header', function (): void {
     $mock = MockClient::global([
         authOk(),
-        MockResponse::make([], 201, ['Location' => '/12345678/purchases/p-9']),
+        MockResponse::make([], 303, ['Location' => '/12345678/purchases/p-9']),
         MockResponse::make(['id' => 'p-9', 'accessCode' => 'XYZ9999']),
     ]);
 
@@ -191,7 +196,7 @@ it('volgt een aankoop-antwoord zonder body via de Location-header', function ():
 it('weigert een aankoopbevestiging zonder id en zonder Location', function (): void {
     MockClient::global([
         authOk(),
-        MockResponse::make([], 201),
+        MockResponse::make([], 303),
     ]);
 
     expect(fn () => itheorie()->createPurchase(new PurchaseRequest('c-1', 'Jan', 'jan@example.com')))
@@ -214,4 +219,77 @@ it('geeft een lege collectie wanneer iTheorie geen data-sleutel stuurt', functio
     ]);
 
     expect(itheorie()->courses()['data'])->toBe([]);
+});
+
+it('verstuurt een aankoop nooit opnieuw, ook niet bij een 5xx', function (): void {
+    $mock = MockClient::global([
+        authOk(),
+        MockResponse::make(['status' => 502, 'code' => 0, 'message' => 'Bad gateway'], 502),
+    ]);
+
+    expect(fn () => itheorie()->createPurchase(new PurchaseRequest('c-1', 'Jan', 'jan@example.com')))
+        ->toThrow(ItheorieException::class);
+
+    $mock->assertSentCount(2);
+});
+
+it('verstuurt een aankoop nooit opnieuw wanneer de verbinding wegvalt', function (): void {
+    $mock = MockClient::global([
+        authOk(),
+        MockResponse::make(['status' => 504, 'code' => 0, 'message' => 'Gateway timeout'], 504),
+    ]);
+
+    expect(fn () => itheorie()->createPurchase(new PurchaseRequest('c-1', 'Jan', 'jan@example.com')))
+        ->toThrow(ItheorieException::class);
+
+    $mock->assertSentCount(2);
+});
+
+it('herstelt ook op een tokenfout die geen intrekking is', function (): void {
+    $mock = MockClient::global([
+        authOk('jwt-1'),
+        partnerError(401, 401009, 'Token is invalid'),
+        authOk('jwt-2'),
+        MockResponse::make(['data' => [['id' => 'c-1']], 'links' => []]),
+    ]);
+
+    expect(itheorie()->courses()['data'][0]['id'])->toBe('c-1');
+
+    $mock->assertSentCount(4);
+});
+
+it('gebruikt het verse token van een parallelle winnaar in plaats van opnieuw te authentiseren', function (): void {
+    $creds = itheorieCreds();
+
+    $store = new class implements TokenStore
+    {
+        /** @var list<string> */
+        public array $tokens = ['jwt-oud', 'jwt-nieuw'];
+
+        public int $puts = 0;
+
+        public function get(ItheorieCredentials $credentials): ?string
+        {
+            return array_shift($this->tokens) ?? 'jwt-nieuw';
+        }
+
+        public function put(ItheorieCredentials $credentials, string $token): void
+        {
+            $this->puts++;
+        }
+    };
+
+    $itheorie = new Itheorie(new StaticCredentialResolver($creds), $store, Cache::store('array')->getStore());
+
+    $mock = MockClient::global([
+        partnerError(401, 401004, 'Token is revoked'),
+        MockResponse::make(['data' => [], 'links' => []]),
+    ]);
+
+    $itheorie->courses();
+
+    expect(sentRequests($mock)[1]->headers()->get('Authorization'))->toBe('Bearer jwt-nieuw')
+        ->and($store->puts)->toBe(0);
+
+    $mock->assertSentCount(2);
 });

@@ -24,8 +24,8 @@ class ItheorieException extends RuntimeException
         parent::__construct($message, $status, $previous);
     }
 
-    public function isRevokedToken(): bool
+    public function isStaleToken(): bool
     {
-        return $this->kind === ErrorKind::Token && $this->partnerCode === 401004;
+        return $this->kind === ErrorKind::Token;
     }
 }

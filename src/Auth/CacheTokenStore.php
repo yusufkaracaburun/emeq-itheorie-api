@@ -26,11 +26,6 @@ final readonly class CacheTokenStore implements TokenStore
         $this->cache->forever($this->key($credentials), $token);
     }
 
-    public function forget(ItheorieCredentials $credentials): void
-    {
-        $this->cache->forget($this->key($credentials));
-    }
-
     private function key(ItheorieCredentials $credentials): string
     {
         return self::PREFIX.$credentials->fingerprint();
