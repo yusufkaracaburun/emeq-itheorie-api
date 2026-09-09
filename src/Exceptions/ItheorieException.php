@@ -24,8 +24,15 @@ class ItheorieException extends RuntimeException
         parent::__construct($message, $status, $previous);
     }
 
+    /**
+     * iTheorie kent geen token-expiry, dus een gecacht token leeft door tot het
+     * account eronder verdwijnt — bij een sandbox-rebuild gebeurt dat. Zo'n token
+     * geeft 401010 tot 401012 in plaats van een token-code; opnieuw inloggen lost
+     * het op, en bestaat de broker echt niet dan faalt de retry alsnog.
+     */
     public function isStaleToken(): bool
     {
-        return $this->kind === ErrorKind::Token;
+        return $this->kind === ErrorKind::Token
+            || ($this->partnerCode >= 401010 && $this->partnerCode <= 401012);
     }
 }

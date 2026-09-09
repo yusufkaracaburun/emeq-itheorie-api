@@ -119,10 +119,37 @@ it('probeert precies één keer opnieuw bij een blijvend ingetrokken token', fun
     $mock->assertSentCount(4);
 });
 
-it('probeert niet opnieuw bij een broker-authenticatiefout', function (): void {
+it('logt opnieuw in wanneer de broker achter het token verdwenen is', function (): void {
+    $mock = MockClient::global([
+        authOk('jwt-1'),
+        partnerError(401, 401012, 'Broker not found'),
+        authOk('jwt-2'),
+        MockResponse::make(['data' => [['id' => 'c-1']], 'links' => []]),
+    ]);
+
+    $courses = itheorie()->courses();
+
+    $mock->assertSentCount(4);
+    expect($courses['data'][0]['id'])->toBe('c-1');
+});
+
+it('probeert precies één keer opnieuw bij een broker die echt niet bestaat', function (): void {
+    $mock = MockClient::global([
+        authOk('jwt-1'),
+        partnerError(401, 401010, 'Broker not found'),
+        authOk('jwt-2'),
+        partnerError(401, 401010, 'Broker not found'),
+    ]);
+
+    expect(fn () => itheorie()->courses())->toThrow(ItheorieException::class);
+
+    $mock->assertSentCount(4);
+});
+
+it('probeert niet opnieuw bij een verkeerde inlog', function (): void {
     $mock = MockClient::global([
         authOk(),
-        partnerError(401, 401010, 'Broker not found'),
+        partnerError(401, 401003, 'Invalid credentials'),
     ]);
 
     expect(fn () => itheorie()->courses())->toThrow(ItheorieException::class);
